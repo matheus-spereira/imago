@@ -1,12 +1,33 @@
 // prisma/schema.prisma (exemplo)
 generator client {
   provider = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"] // Necessário para vetores
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  extensions = [vector] // Ativa a extensão pgvector para vetores
 }
+
+// Eenum para tipos e status
+enum MediaType {
+  TEXT      // PDF, DOCX, TXT
+  AUDIO     // MP3, WAV
+  VIDEO     // MP4, MOV
+  LINK      // Youtube, Blog posts (Futuro)
+}
+
+enum ProcessingStatus {
+  PENDING     // Arquivo recebido
+  PROCESSING  // IA está lendo/transcrevendo
+  COMPLETED   // Pronto para o chat
+  FAILED      // Erro no processo
+}
+
+// ==========================================
+// 1. Camada B2B (Seus Clientes / Consultores)
+// ==========================================
 
 model User {
   id            String    @id @default(cuid())
@@ -20,6 +41,32 @@ model User {
 
   accounts      Account[]
   sessions      Session[]
+
+  // Relacionamento 1:1 com o Perfil de Consultor
+  consultantProfile ConsultantProfile?
+}
+
+model ConsultantProfile {
+  id              String    @id @default(cuid())
+  userId          String    @unique
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  slug            String    @unique // ex: imago.ai/chat/pedro-silva
+  name            String    // Nome de exibição da IA
+  systemPrompt    String?   @db.Text
+  welcomeMessage  String?
+  
+  // Configurações de Limite (Plano de Negócios)
+  plan            String    @default("STARTER") // STARTER, PRO, SCALE
+  monthlyUsage    Int       @default(0) // Contador de mensagens no mês
+  
+  documents       Document[]
+  chatSessions    ChatSession[] // Histórico de todos os clientes dele
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([slug]) // Busca rápida pela URL do consultor
 }
 
 model Account {
@@ -50,4 +97,97 @@ model Session {
   expires      DateTime
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+}
+
+// ==========================================
+// 2. Camada de Conhecimento (RAG)
+// ==========================================
+
+model Document {
+  id            String    @id @default(cuid())
+  consultantId  String
+  consultant    ConsultantProfile @relation(fields: [consultantId], references: [id], onDelete: Cascade)
+  
+  fileName      String
+  fileKey       String
+  
+  // Novos Campos
+  mediaType     MediaType         @default(TEXT)
+  status        ProcessingStatus  @default(PENDING)
+  errorMessage  String?           // Se der erro, explicamos aqui
+  
+  charCount     Int?      // Agora é opcional, pois só sabemos depois de transcrever
+  isIndexed     Boolean   @default(false)
+  
+  chunks        DocumentChunk[]
+  createdAt     DateTime  @default(now())
+
+  @@index([consultantId])
+}
+
+model DocumentChunk {
+  id           String   @id @default(cuid())
+  
+  // Isolamento Rápido
+  consultantId String
+  documentId   String
+  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  
+  // Conteúdo Textual
+  content      String   @db.Text
+  
+  // Melhoria 1: Metadados Flexíveis (Página, Capítulo, Autor, Data)
+  // Útil para citações precisas: "Segundo a página 4..."
+  metadata     Json?    @default("{}")
+
+  // Melhoria 2: Busca Vetorial (Semântica)
+  embedding    Unsupported("vector(1536)")?
+
+  // Melhoria 3: Busca Híbrida (Palavras-chave exatas)
+  // O Prisma não gerencia tsvector nativamente bem, então criamos como Unsupported
+  // ou gerenciamos via SQL bruto no Supabase, mas deixamos o campo aqui se for possível mapear.
+  // Alternativa segura: deixar o Postgres gerar isso automaticamente via trigger.
+  
+  createdAt    DateTime @default(now())
+  
+  // Índices de Alta Performance
+  // @@index([embedding], name: "embedding_index", type: Hnsw) // Comentei para criar via SQL
+  @@index([consultantId])
+  @@index([documentId])
+}
+
+// ==========================================
+// 3. Camada B2C (Os Clientes dos seus Clientes)
+// ==========================================
+
+model ChatSession {
+  id            String    @id @default(cuid())
+  
+  consultantId  String
+  consultant    ConsultantProfile @relation(fields: [consultantId], references: [id], onDelete: Cascade)
+  
+  // Identificação do usuário final (pode ser cookie, email capturado ou anônimo)
+  endUserEmail  String?   
+  fingerprint   String?   // Identificador de navegador/dispositivo
+  
+  messages      ChatMessage[]
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([consultantId])
+}
+
+model ChatMessage {
+  id            String      @id @default(cuid())
+  sessionId     String
+  session       ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  
+  role          String      // "user" ou "assistant"
+  content       String      @db.Text
+  
+  // Opcional: Feedback do usuário final (Joinha/Joinha invertido)
+  rating        Int?        
+  
+  createdAt     DateTime    @default(now())
 }

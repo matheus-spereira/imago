@@ -1,10 +1,18 @@
 // src/lib/auth.ts
-import { NextAuthOptions } from 'next-auth';
+import { NextAuthOptions, DefaultSession } from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
 import GoogleProvider from 'next-auth/providers/google';
 import { PrismaAdapter } from '@next-auth/prisma-adapter';
 import { prisma } from '@/lib/prisma';
 import bcrypt from 'bcrypt';
+
+declare module "next-auth" {
+  interface Session {
+    user: {
+      id: string;
+    } & DefaultSession["user"];
+  }
+}
 
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
@@ -19,6 +27,7 @@ export const authOptions: NextAuthOptions = {
       },
       async authorize(credentials) {
         console.log('[auth] authorize called with', credentials);
+        if (!credentials) return null;
         const user = await prisma.user.findUnique({ where: { email: credentials.email } });
         console.log('[auth] found user', !!user, user?.email);
         if (!user || !user.password) {
@@ -88,7 +97,7 @@ export const authOptions: NextAuthOptions = {
     },
     async session({ session, token }) {
       console.log('Session callback triggered:', session, token);
-      if (token?.id) session.user.id = token.id;
+      if (session.user && token?.id) session.user.id = token.id as string;
       return session;
     },
   },

@@ -1,41 +1,33 @@
 /** @type {import('tailwindcss').Config} */
-const config = {
+module.exports = {
   content: [
-    "./src/app/**/*.{js,ts,jsx,tsx}",
-    "./src/pages/**/*.{js,ts,jsx,tsx}",
-    "./src/components/**/*.{js,ts,jsx,tsx}",
+    "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
   ],
   theme: {
     extend: {
       colors: {
+        // Conectando o Tailwind às variáveis do seu CSS global
         primary: {
-          primary: { 500: '#14b8a6' },
-          50: '#f0fdfa',
-          100: '#ccfbf1',
-          500: '#14b8a6',
-          600: '#0d9488',
-          900: '#134e4a',
+          50: 'var(--primary-50)',
+          100: 'var(--primary-100)',
+          500: 'var(--primary-500)',
+          600: 'var(--primary-600)',
+          900: 'var(--primary-900)',
+          DEFAULT: 'var(--primary-500)', // Permite usar apenas bg-primary
         },
         accent: {
-          500: '#22c55e',
-          600: '#16a34a',
+          500: 'var(--accent-500)',
+          600: 'var(--accent-600)',
         },
+        // Mapeando as cores de fundo
         bg: {
-          start: '#0f172a',
-          end: '#000000',
-        },
-        text: {
-          primary: '#ffffff',
-          secondary: '#cbd5e1',
-          muted: '#94a3b8',
-        },
-        surface: {
-          800: '#1e293b',
-          900: '#0f172a',
+          start: 'var(--bg-start)',
+          end: 'var(--bg-end)',
         },
       },
     },
   },
   plugins: [],
 };
-export default config;
