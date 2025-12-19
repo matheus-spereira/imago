@@ -23,6 +23,7 @@ type ChatSession = {
 };
 
 type ConsultantInfo = {
+  id?: string;
   name: string;
   slug?: string;
 };
@@ -157,15 +158,22 @@ export default function InternalChatPage() {
     setMessages(prev => [...prev, tempUserMsg]);
 
     try {
+      // Verifica se temos o ID antes de enviar
+      if (!consultant.id) {
+        alert("Erro: Perfil do consultor não carregado.");
+        setIsLoading(false);
+        return;
+      }
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: [...messages, tempUserMsg],
           sessionId: currentSessionId,
-          consultantId: 'teste-fixo-123'
+          consultantId: consultant.id // <--- AGORA USA O ID REAL!
         }),
-        signal: abortControllerRef.current.signal // Conecta o botão stop
+        signal: abortControllerRef.current.signal
       });
 
       if (!response.ok) throw new Error('Erro na API');
