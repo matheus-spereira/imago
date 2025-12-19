@@ -110,8 +110,8 @@ model Document {
   
   fileName      String
   fileKey       String
-  
-  // Novos Campos
+
+  summary       String?   @db.Text // Resumo gerado pela IA após processamento  
   mediaType     MediaType         @default(TEXT)
   status        ProcessingStatus  @default(PENDING)
   errorMessage  String?           // Se der erro, explicamos aqui
@@ -163,12 +163,18 @@ model DocumentChunk {
 model ChatSession {
   id            String    @id @default(cuid())
   
+  // Título que aparece na Sidebar (Ex: "Resumo da Aula 03")
+  title         String    @default("Nova Conversa")  // <--- ADICIONAR
+
+  // Para saber se foi você testando ou um cliente real
+  isDemo        Boolean   @default(false)            // <--- ADICIONAR
+  
   consultantId  String
   consultant    ConsultantProfile @relation(fields: [consultantId], references: [id], onDelete: Cascade)
   
-  // Identificação do usuário final (pode ser cookie, email capturado ou anônimo)
-  endUserEmail  String?   
-  fingerprint   String?   // Identificador de navegador/dispositivo
+  // Identificação do usuário final 
+  endUserEmail  String?
+  fingerprint   String?   
   
   messages      ChatMessage[]
   
