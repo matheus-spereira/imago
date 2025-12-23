@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 
-// GET: Busca as mensagens (Já existia)
+// GET: Busca as mensagens (Mantido igual, está ótimo)
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> }
@@ -20,7 +20,7 @@ export async function GET(
   }
 }
 
-// DELETE: Apaga a sessão e mensagens em cascata (NOVO)
+// DELETE: Ajustado para garantir a exclusão sem erros
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> }
@@ -28,10 +28,17 @@ export async function DELETE(
   try {
     const { sessionId } = await params;
 
-    // Ao deletar a sessão, o Prisma deleta as mensagens automaticamente (Cascade)
-    // se estiver configurado no schema. Se não, deletamos manualmente por segurança.
-    await prisma.chatSession.delete({
-      where: { id: sessionId },
+    // 1. Transaction para garantir que tudo seja apagado ou nada seja
+    await prisma.$transaction(async (tx) => {
+      // Apaga todas as mensagens da sessão primeiro (Garante que não dê erro de chave estrangeira)
+      await tx.chatMessage.deleteMany({
+        where: { sessionId },
+      });
+
+      // Apaga a sessão
+      await tx.chatSession.delete({
+        where: { id: sessionId },
+      });
     });
 
     return NextResponse.json({ success: true });

@@ -6,8 +6,11 @@ import { createRequire } from 'module';
 import { createClient as createDeepgramClient } from "@deepgram/sdk";
 
 // ==============================================================================
-// CONFIGURAÇÕES GLOBAIS
+// CONFIGURAÇÕES
 // ==============================================================================
+// Garante que o worker aguente arquivos grandes sem timeout rápido (Vercel Pro/Hobby limits apply)
+export const maxDuration = 60; 
+
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const supabase = createClient(
@@ -15,23 +18,23 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-// Inicializa Deepgram apenas se a chave existir
 const deepgram = process.env.DEEPGRAM_API_KEY 
   ? createDeepgramClient(process.env.DEEPGRAM_API_KEY) 
   : null;
 
 // ==============================================================================
-// 1. ESTRATÉGIA RÁPIDA (PDF/TXT)
+// 1. EXTRAÇÃO RÁPIDA (PDF TEXT)
 // ==============================================================================
 async function extractTextFast(buffer: Buffer): Promise<string> {
   const require = createRequire(import.meta.url);
+  // pdf2json precisa ser instalado: npm install pdf2json
   const PDFParser = require("pdf2json");
 
   return new Promise((resolve) => {
     const pdfParser = new PDFParser(null, 1);
 
     pdfParser.on("pdfParser_dataError", (errData: any) => {
-      console.warn("[FAST EXTRACT] Erro no pdf2json:", errData.parserError);
+      console.warn("[FAST EXTRACT] Erro no pdf2json (tentaremos fallback):", errData.parserError);
       resolve(""); 
     });
 
@@ -49,38 +52,20 @@ async function extractTextFast(buffer: Buffer): Promise<string> {
 }
 
 // ==============================================================================
-// 2. ESTRATÉGIA INTELIGENTE (OCR/Markdown - LlamaParse)
+// 2. EXTRAÇÃO INTELIGENTE (OCR/MARKDOWN - LLAMAPARSE)
 // ==============================================================================
 async function extractTextSmart(buffer: Buffer, fileName: string): Promise<string> {
-  console.log('[WORKER] Ativando LlamaParse (Modo Dinâmico)...');
+  console.log('[WORKER] Ativando LlamaParse (Modo OCR/Markdown)...');
   
   const require = createRequire(import.meta.url);
-  
   let LlamaParseReader;
 
-  // Tenta importar de diferentes locais para compatibilidade
-  const possiblePaths = [
-    "llama-cloud-services",               
-    "@llamaindex/cloud/reader",           
-    "llamaindex/readers/LlamaParseReader", 
-    "llamaindex"                          
-  ];
-
-  for (const path of possiblePaths) {
-    try {
-      const mod = require(path);
-      if (mod.LlamaParseReader) {
-        LlamaParseReader = mod.LlamaParseReader;
-        break;
-      } else if (mod.default?.LlamaParseReader) {
-        LlamaParseReader = mod.default.LlamaParseReader;
-        break;
-      }
-    } catch (e) { }
-  }
-
-  if (!LlamaParseReader) {
-     throw new Error("LlamaParseReader não encontrado. Verifique a instalação do llama-cloud-services.");
+  // Tenta importar dinamicamente para evitar erro de build se não estiver instalado
+  try {
+    const mod = require("llama-cloud-services"); 
+    LlamaParseReader = mod.LlamaParseReader;
+  } catch (e) {
+    throw new Error("Biblioteca 'llama-cloud-services' não instalada. Rode: npm install llama-cloud-services");
   }
 
   try {
@@ -90,8 +75,9 @@ async function extractTextSmart(buffer: Buffer, fileName: string): Promise<strin
       language: "pt", 
     });
 
+    // O LlamaParse espera Uint8Array ou Blob
     const content = new Uint8Array(buffer);
-    const documents = await reader.loadDataAsContent(content, "application/pdf");
+    const documents = await reader.loadDataAsContent(content, fileName);
     
     return documents.map((page: any) => page.text).join("\n\n");
 
@@ -102,42 +88,37 @@ async function extractTextSmart(buffer: Buffer, fileName: string): Promise<strin
 }
 
 // ==============================================================================
-// 3. ESTRATÉGIA DE ÁUDIO/VÍDEO (Deepgram)
+// 3. TRANSCRIÇÃO DE ÁUDIO/VÍDEO (DEEPGRAM)
 // ==============================================================================
 async function extractVideoAudio(fileKey: string): Promise<string> {
-  if (!deepgram) throw new Error("DEEPGRAM_API_KEY não configurada no .env");
+  if (!deepgram) throw new Error("DEEPGRAM_API_KEY ausente no .env");
   
-  console.log('[WORKER] Iniciando transcrição via Deepgram (URL)...');
+  console.log('[WORKER] Iniciando transcrição via Deepgram...');
 
-  // 1. Gerar URL assinada (temporária) para a Deepgram baixar o arquivo do Supabase
-  // 600 segundos (10 min) é suficiente para a Deepgram iniciar o download
+  // 1. URL assinada temporária (10 min)
   const { data, error } = await supabase.storage
     .from('documents')
     .createSignedUrl(fileKey, 600);
 
-  if (error || !data) throw new Error("Erro ao gerar URL assinada do vídeo.");
+  if (error || !data) throw new Error("Erro ao gerar URL assinada para Deepgram.");
 
-  console.log('[WORKER] URL gerada. Enviando para Deepgram...');
-
-  // 2. Enviar URL para transcrição
-  // O modelo "nova-2" é o estado da arte em velocidade e custo
+  // 2. Envia para Deepgram (Modelo Nova-2 é o melhor custo-benefício)
   const { result, error: dgError } = await deepgram.listen.prerecorded.transcribeUrl(
     { url: data.signedUrl },
     {
       model: "nova-2",
       language: "pt-BR",
-      smart_format: true, // Adiciona pontuação e parágrafos automaticamente
+      smart_format: true, 
       punctuate: true,
     }
   );
 
-  if (dgError) throw new Error(`Erro Deepgram: ${dgError.message}`);
+  if (dgError) throw new Error(`Deepgram API Erro: ${dgError.message}`);
 
-  // 3. Extrair o texto da resposta JSON
   const transcript = result.results?.channels[0]?.alternatives[0]?.transcript;
   
   if (!transcript) {
-    console.warn("[WORKER] Deepgram retornou vazio.");
+    console.warn("[WORKER] Deepgram retornou texto vazio.");
     return "";
   }
   
@@ -153,93 +134,98 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     documentId = body.documentId;
-    console.log(`[WORKER] Iniciando Pipeline: Doc ID ${documentId}`);
+    
+    if (!documentId) return NextResponse.json({ error: 'documentId required' }, { status: 400 });
 
+    console.log(`[WORKER] Processando Doc ID: ${documentId}`);
+
+    // Busca o documento e confirma que existe
     const doc = await prisma.document.findUnique({ where: { id: documentId } });
-    if (!doc) return NextResponse.json({ error: 'Not found' });
+    if (!doc) return NextResponse.json({ error: 'Document not found' }, { status: 404 });
 
     // Atualiza status para PROCESSING
-    await prisma.document.update({ where: { id: documentId }, data: { status: 'PROCESSING' } });
+    await prisma.document.update({ 
+        where: { id: documentId }, 
+        data: { status: 'PROCESSING', errorMessage: null } 
+    });
 
     let fullText = "";
     let extractionSource = "FAST";
 
-    // --- ROTEAMENTO POR TIPO DE MÍDIA ---
-    
+    // --- A. EXTRAÇÃO DE TEXTO ---
     if (doc.mediaType === 'VIDEO' || doc.mediaType === 'AUDIO') {
-      // >>>> ROTA DE VÍDEO/ÁUDIO <<<<
       extractionSource = "TRANSCRIPTION_DEEPGRAM";
       try {
         fullText = await extractVideoAudio(doc.fileKey);
       } catch (e: any) {
-        console.error("Erro na transcrição:", e);
-        throw new Error(`Falha ao transcrever: ${e.message}`);
+        throw new Error(`Erro na transcrição: ${e.message}`);
       }
-
     } else {
-      // >>>> ROTA DE TEXTO (PDF/DOC/TXT) <<<<
-      
-      // Download do arquivo para memória (buffer)
+      // É ARQUIVO DE TEXTO (PDF, TXT, MD)
       const { data: fileBlob, error: downloadError } = await supabase.storage
         .from('documents')
         .download(doc.fileKey);
 
-      if (downloadError || !fileBlob) throw new Error("Erro download Supabase");
+      if (downloadError || !fileBlob) throw new Error("Erro ao baixar do Supabase");
       
       const arrayBuffer = await fileBlob.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
 
-      console.log('[WORKER] Tentando extração rápida (pdf2json)...');
+      // 1. Tenta Fast Extract (pdf2json)
       fullText = await extractTextFast(buffer);
+      try { fullText = decodeURIComponent(fullText); } catch (e) {}
 
-      try { fullText = decodeURIComponent(fullText); } catch (e) { /* Ignora */ }
-      
-      // Validação e Fallback para LlamaParse
+      // 2. Se falhar ou for muito curto (OCR necessário), usa LlamaParse
       if (fullText.trim().length < 50) {
-        console.log(`[WORKER] Texto insuficiente. Indo para LlamaParse.`);
-        try {
-          fullText = await extractTextSmart(buffer, doc.fileName);
-          extractionSource = "SMART_LLAMA";
-        } catch (smartError: any) {
-           console.error("[WORKER] Falha também no Smart Extract:", smartError.message);
-           throw new Error("Não foi possível extrair texto do documento.");
+        if (process.env.LLAMA_CLOUD_API_KEY) {
+            try {
+                fullText = await extractTextSmart(buffer, doc.fileName);
+                extractionSource = "SMART_LLAMA";
+            } catch (smartError) {
+                console.warn("Smart extract falhou, mantendo texto vazio/curto.");
+            }
+        } else {
+            console.warn("LLAMA_CLOUD_API_KEY não configurada. Pulando OCR.");
         }
       }
     }
 
-    // Validação Final do Texto
-    if (!fullText || fullText.length < 10) {
-      throw new Error("O arquivo parece vazio ou não foi possível ler o conteúdo.");
+    if (!fullText || fullText.trim().length < 10) {
+      throw new Error("Não foi possível extrair texto utilizável do arquivo.");
     }
-    
-    console.log(`[WORKER] Sucesso via ${extractionSource}. Tamanho final: ${fullText.length} chars.`);
 
-    // --- CHUNKING ---
+    // --- B. CHUNKING (DIVISÃO) ---
     const chunks: string[] = [];
     const CHUNK_SIZE = 1000;
     const OVERLAP = 200;
     
-    for (let i = 0; i < fullText.length; i += (CHUNK_SIZE - OVERLAP)) {
-      chunks.push(fullText.slice(i, i + CHUNK_SIZE));
+    // Limpeza básica
+    const cleanText = fullText.replace(/\s+/g, ' ').trim();
+
+    for (let i = 0; i < cleanText.length; i += (CHUNK_SIZE - OVERLAP)) {
+      chunks.push(cleanText.slice(i, i + CHUNK_SIZE));
     }
 
-    console.log(`[WORKER] Gerando ${chunks.length} chunks...`);
+    console.log(`[WORKER] Gerando Embeddings para ${chunks.length} chunks...`);
 
-    // --- EMBEDDING (Vetorização) ---
+    // --- C. EMBEDDING (VETORIZAÇÃO) ---
+    // Removemos os chunks antigos desse documento para evitar duplicidade em reprocessamento
+    await prisma.documentChunk.deleteMany({ where: { documentId } });
+
     for (const chunkContent of chunks) {
       if (!chunkContent) continue;
-      
-      // MOCK ATIVADO (Para evitar erro 429 na OpenAI durante testes)
-      /* const embeddingResponse = await openai.embeddings.create({
+
+      // 1. Gera Embedding Real na OpenAI
+      const embeddingResponse = await openai.embeddings.create({
         model: 'text-embedding-3-small',
         input: chunkContent,
       });
       const vector = embeddingResponse.data[0].embedding;
-      */
-      
-      // Vetor Aleatório Fake
-      const vector = Array(1536).fill(0).map(() => Math.random()); 
 
+      // 2. Prepara string do vetor para o PostgreSQL ([0.1, 0.2, ...])
+      const vectorString = `[${vector.join(',')}]`;
+
+      // 3. Insere no Banco (Raw Query é necessária para o tipo vector)
       await prisma.$executeRaw`
         INSERT INTO "DocumentChunk" (id, "consultantId", "documentId", content, embedding, metadata, "createdAt")
         VALUES (
@@ -247,39 +233,39 @@ export async function POST(req: Request) {
           ${doc.consultantId}, 
           ${doc.id}, 
           ${chunkContent}, 
-          ${JSON.stringify(vector)}::vector, 
+          ${vectorString}::vector, 
           ${JSON.stringify({ source: extractionSource })}::jsonb,
           NOW()
         );
       `;
     }
 
-    // --- FINALIZAÇÃO E RESUMO ---
-    const summaryPreview = fullText
-      .slice(0, 300)
-      .replace(/[\n\r]+/g, ' ') 
-      .trim() + (fullText.length > 300 ? '...' : '');
+    // --- D. FINALIZAÇÃO ---
+    // Gera um resumo curto (300 chars) para mostrar na lista
+    const summaryPreview = cleanText.slice(0, 300) + (cleanText.length > 300 ? '...' : '');
 
     await prisma.document.update({
       where: { id: documentId },
       data: { 
         status: 'COMPLETED', 
         isIndexed: true, 
-        charCount: fullText.length,
+        charCount: cleanText.length,
         summary: summaryPreview 
       }
     });
 
-    return NextResponse.json({ success: true, source: extractionSource });
+    return NextResponse.json({ success: true, chunks: chunks.length, source: extractionSource });
 
   } catch (error: any) {
-    console.error('[WORKER ERROR]', error);
+    console.error('[WORKER FATAL ERROR]', error);
+    
     if (documentId) {
       await prisma.document.update({
         where: { id: documentId },
         data: { status: 'FAILED', errorMessage: error.message }
       });
     }
+    
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

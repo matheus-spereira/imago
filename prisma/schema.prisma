@@ -111,6 +111,8 @@ model Agent {
   
   chatSessions  ChatSession[]
 
+  documents     Document[]
+
   isActive      Boolean    @default(true)
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
@@ -139,6 +141,7 @@ model Document {
   // Filtros
   tags          String[]  @default([]) 
   accessLevel   Int       @default(0)  
+  agents        Agent[]
   
   chunks        DocumentChunk[]
   createdAt     DateTime  @default(now())
@@ -230,23 +233,34 @@ model CreditTransaction {
 model ChatSession {
   id           String   @id @default(cuid())
   title        String?
-  
+
+  // Agente (Opcional)
   agentId      String?
   agent        Agent?   @relation(fields: [agentId], references: [id], onDelete: SetNull)
 
+  // Consultor Dono do Bot (Obrigatório para saber de quem é o cérebro)
   consultantId String
   consultant   ConsultantProfile @relation(fields: [consultantId], references: [id], onDelete: Cascade)
 
-  studentId    String?  
+  // --- QUEM ESTÁ CONVERSANDO ---
+  // Pode ser um aluno (StudentAccount) ou o próprio consultor (User)
+  // Para evitar erros de relacionamento, deixamos como String livre indexada.
+  userId       String   @default("anonimo") 
+  
+  // Mantemos o studentId opcional caso queira fazer o link estrito no futuro
+  studentId    String?
   student      StudentAccount? @relation(fields: [studentId], references: [id], onDelete: Cascade)
   
   isDemo       Boolean  @default(false)
   messages     ChatMessage[]
+  
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  // Índices para performance
   @@index([consultantId])
   @@index([studentId])
+  @@index([userId]) // <--- Importante para o histórico carregar rápido
 }
 
 model ChatMessage {

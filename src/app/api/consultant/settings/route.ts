@@ -3,11 +3,16 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 
-// GET: Buscar TUDO (Perfil, Tags, Níveis, Convites)
+// GET: Busca Configurações Globais + Dados do Agente (Opcional)
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
+  // 1. Captura o Slug da URL (se estivermos na tela de um agente específico)
+  const { searchParams } = new URL(req.url);
+  const agentSlug = searchParams.get('agentSlug');
+
+  // 2. Busca o Consultor e suas configs globais
   const consultant = await prisma.consultantProfile.findFirst({
     where: { user: { email: session.user.email } },
     include: {
@@ -22,52 +27,76 @@ export async function GET(req: NextRequest) {
 
   if (!consultant) return NextResponse.json({ error: 'Profile not found' }, { status: 404 });
 
-  // Retorna estrutura compatível com o Frontend
+  // 3. Se houver slug, busca o Agente específico para preencher a aba "Geral/IA"
+  let agentData = null;
+  if (agentSlug) {
+    agentData = await prisma.agent.findUnique({
+      where: {
+        consultantId_slug: { // Chave composta definida no Schema
+          consultantId: consultant.id,
+          slug: agentSlug
+        }
+      },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        systemPrompt: true,
+        description: true
+      }
+    });
+  }
+
+  // Retorna estrutura híbrida (Global + Agente Específico)
   return NextResponse.json({
+    // Dados globais do Consultor
     consultant: {
       id: consultant.id,
       name: consultant.name,
       slug: consultant.slug,
-      systemPrompt: consultant.systemPrompt
+      // systemPrompt removido daqui, pois agora é do Agente
     },
+    // Dados do Agente atual (pode ser null se estivermos numa tela geral)
+    agent: agentData, 
+    
+    // Listas Globais
     tags: consultant.definedTags,
     levels: consultant.definedLevels,
     invites: consultant.invites
   });
 }
 
-// PATCH: Atualizar Perfil (Nome e Cérebro da IA)
+// PATCH: Atualizar APENAS o Perfil do Consultor (Nome, Foto, etc)
+// Nota: A atualização do Agente (Prompt, Nome do Bot) vai para outra rota (/api/agents/update)
 export async function PATCH(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await req.json();
-  const { name, systemPrompt } = body;
+  const { name } = body; // Removemos systemPrompt daqui
 
   try {
-    const consultant = await prisma.consultantProfile.update({
-      where: { userId: session.user.id }, // Assume que userId é unico (relação 1:1)
-      data: {
-        name,
-        systemPrompt
-      }
+    // Atualiza apenas dados do Consultor Humano
+    const updatedConsultant = await prisma.consultantProfile.update({
+      where: { userId: session.user.id }, // Ajuste conforme seu auth provider (userId ou email)
+      data: { name }
     });
-    return NextResponse.json(consultant);
+    return NextResponse.json(updatedConsultant);
   } catch (error: any) {
-    // Fallback: se não achar por userId direto (dependendo de como o prisma gera), busca primeiro
-    const current = await prisma.consultantProfile.findFirst({ where: { user: { email: session.user.email } }});
-    if(current) {
-        const updated = await prisma.consultantProfile.update({
-            where: { id: current.id },
-            data: { name, systemPrompt }
-        });
-        return NextResponse.json(updated);
-    }
-    return NextResponse.json({ error: 'Erro ao atualizar' }, { status: 500 });
+     // Fallback de busca se falhar pelo ID direto
+     const current = await prisma.consultantProfile.findFirst({ where: { user: { email: session.user.email } }});
+     if(current) {
+         const updated = await prisma.consultantProfile.update({
+             where: { id: current.id },
+             data: { name }
+         });
+         return NextResponse.json(updated);
+     }
+     return NextResponse.json({ error: 'Erro ao atualizar perfil' }, { status: 500 });
   }
 }
 
-// POST: Criar Tag ou Nível
+// POST: Criar Tag ou Nível (Mantido, pois são globais)
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -104,18 +133,22 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ error: 'Invalid type' }, { status: 400 });
 }
 
-// DELETE: Remover Tag, Nível ou CONVITE
+// DELETE: Remover Tag, Nível ou Convite (Mantido)
 export async function DELETE(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
   const id = searchParams.get('id');
-  const type = searchParams.get('type'); // 'TAG', 'LEVEL', 'INVITE'
+  const type = searchParams.get('type');
 
   if (!id || !type) return NextResponse.json({ error: 'Missing params' }, { status: 400 });
 
   try {
+    // Verifica propriedade antes de deletar (Segurança Adicional recomendada)
+    // Para simplificar o MVP, assumimos que o ID pertence ao usuário logado ou o prisma falhará se não achar
+    // O ideal seria um where: { id, consultant: { user: { email... } } }
+    
     if (type === 'TAG') await prisma.consultantTag.delete({ where: { id } });
     if (type === 'LEVEL') await prisma.consultantLevel.delete({ where: { id } });
     if (type === 'INVITE') await prisma.invite.delete({ where: { id } });

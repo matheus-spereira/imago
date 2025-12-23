@@ -13,8 +13,8 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    // CORREÇÃO AQUI: Extraindo tags e accessLevel do body
-    const { fileKey, fileName, mediaType, tags, accessLevel } = body;
+    // CORREÇÃO: Recebendo agentId do front-end
+    const { fileKey, fileName, mediaType, tags, accessLevel, agentId } = body;
 
     // 2. Buscar ou CRIAR o Perfil do Consultor (Auto-Onboarding)
     let consultant = await prisma.consultantProfile.findFirst({
@@ -50,13 +50,19 @@ export async function POST(req: NextRequest) {
         fileKey,
         mediaType,
         status: 'PENDING',
-        // Agora as variáveis existem no escopo
         tags: tags || [],          
-        accessLevel: accessLevel || 0 
+        accessLevel: accessLevel || 0,
+        
+        // NOVO: Conecta ao Agente se o ID for fornecido
+        // Isso cria o vínculo na tabela de relação _AgentToDocument
+        agents: agentId ? {
+          connect: { id: agentId }
+        } : undefined
       }
     });
 
     // 4. Disparar Processamento (Simulação de Worker)
+    // Nota: Certifique-se que o worker processa o embedding corretamente depois
     const workerUrl = `${process.env.NEXTAUTH_URL || req.nextUrl.origin}/api/ingest/worker`;
     
     fetch(workerUrl, {

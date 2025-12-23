@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useParams } from 'next/navigation'; // <--- IMPORTANTE: Para ler a URL
 import { createClient } from '@supabase/supabase-js';
 import { 
   UploadCloud, FileText, Video, Loader2, CheckCircle, 
@@ -27,11 +28,16 @@ interface DocumentItem {
 interface DefinedTag { id: string; name: string; }
 interface DefinedLevel { id: string; name: string; levelNumber: number; }
 
-export default function KnowledgeBasePage() {
+export default function AgentKnowledgePage() {
+  // 1. CAPTURA DO SLUG DA URL
+  const params = useParams();
+  const agentSlug = params.agentSlug as string;
+
   // Tabs: 'files' | 'settings'
   const [activeTab, setActiveTab] = useState<'files' | 'settings'>('files');
 
   // Dados Principais
+  const [currentAgentId, setCurrentAgentId] = useState<string | null>(null); // <--- ID DO AGENTE
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [availableTags, setAvailableTags] = useState<DefinedTag[]>([]);
   const [availableLevels, setAvailableLevels] = useState<DefinedLevel[]>([]);
@@ -52,7 +58,6 @@ export default function KnowledgeBasePage() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   
-  // CORREÇÃO: Tipagem correta para o preview
   const [previewData, setPreviewData] = useState<{
     isOpen: boolean;
     url: string | null;
@@ -65,34 +70,63 @@ export default function KnowledgeBasePage() {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   );
 
-  // --- FETCH DATA ---
+  // --- FETCH DATA (ADAPTADO PARA AGENTE) ---
   const fetchData = useCallback(async () => {
-    // 1. Busca Docs
-    fetch('/api/documents').then(res => res.json()).then(data => {
-      if(data.documents) setDocuments(data.documents);
-    });
+    if (!agentSlug) return;
 
-    // 2. Busca Configurações (Tags/Levels)
-    fetch('/api/consultant/settings').then(res => res.json()).then(data => {
-      if(data.tags) setAvailableTags(data.tags);
-      if(data.levels) setAvailableLevels(data.levels);
-    });
-  }, []);
+    try {
+        // A. Busca o ID do Agente pelo Slug (Você precisará criar essa rota ou ajustar)
+        // Se não tiver essa rota ainda, o código vai falhar aqui.
+        // Assumindo: /api/agents/lookup?slug=vendas-expert
+        let agentId = currentAgentId;
+        
+        if (!agentId) {
+            const agentRes = await fetch(`/api/agents/lookup?slug=${agentSlug}`);
+            if (agentRes.ok) {
+                const agentData = await agentRes.json();
+                agentId = agentData.id;
+                setCurrentAgentId(agentId);
+            } else {
+                console.error("Agente não encontrado");
+                return;
+            }
+        }
+
+        if (agentId) {
+            // B. Busca Docs filtrados pelo Agente
+            const docsRes = await fetch(`/api/documents?agentId=${agentId}`);
+            const docsData = await docsRes.json();
+            if(docsData.documents) setDocuments(docsData.documents);
+        }
+
+        // C. Busca Configurações Globais (Tags/Levels do Consultor)
+        const settingsRes = await fetch('/api/consultant/settings');
+        const settingsData = await settingsRes.json();
+        if(settingsData.tags) setAvailableTags(settingsData.tags);
+        if(settingsData.levels) setAvailableLevels(settingsData.levels);
+
+    } catch (error) {
+        console.error("Erro ao carregar dados:", error);
+    }
+  }, [agentSlug, currentAgentId]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
   // Polling para status de processamento
   useEffect(() => {
+    // Só faz polling se já tiver o ID do agente e houver docs pendentes
     const hasPending = documents.some(d => d.status === 'PENDING' || d.status === 'PROCESSING');
-    if (hasPending) {
+    if (hasPending && currentAgentId) {
       const interval = setInterval(() => {
-         fetch('/api/documents').then(res => res.json()).then(data => {
-            if(data.documents) setDocuments(data.documents);
-         });
+         fetch(`/api/documents?agentId=${currentAgentId}`)
+            .then(res => res.json())
+            .then(data => {
+                if(data.documents) setDocuments(data.documents);
+            });
       }, 5000);
       return () => clearInterval(interval);
     }
-  }, [documents]);
+  }, [documents, currentAgentId]);
 
   // --- SETTINGS HANDLERS ---
   const handleCreateTag = async () => {
@@ -143,6 +177,8 @@ export default function KnowledgeBasePage() {
 
   const handleFileUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
+    if (!currentAgentId) return alert("Erro: Agente não identificado.");
+
     const file = files[0];
     setIsUploading(true);
     setUploadProgress(0);
@@ -167,6 +203,7 @@ export default function KnowledgeBasePage() {
       if (file.type.startsWith('video/')) mediaType = 'VIDEO';
       if (file.type.startsWith('audio/')) mediaType = 'AUDIO';
 
+      // REGISTRO NO BACKEND (AGORA COM AGENT ID)
       await fetch('/api/documents/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -175,7 +212,8 @@ export default function KnowledgeBasePage() {
           fileKey: data.path,
           mediaType: mediaType,
           tags: selectedTags,
-          accessLevel: selectedLevel
+          accessLevel: selectedLevel,
+          agentId: currentAgentId // <--- VÍNCULO IMPORTANTE
         }),
       });
 
@@ -197,7 +235,6 @@ export default function KnowledgeBasePage() {
     fetchData();
   };
 
-  // --- CORREÇÃO AQUI: Lógica de Preview Restaurada ---
   const handleViewFile = async (doc: DocumentItem) => {
      if (!doc.fileKey) return alert('Arquivo não encontrado.');
      
@@ -208,7 +245,6 @@ export default function KnowledgeBasePage() {
 
        if (error || !data) throw new Error('Erro ao gerar link');
 
-       // Lógica para detectar tipo de arquivo pela extensão
        const ext = doc.fileName.split('.').pop()?.toLowerCase();
        let type: any = 'other';
 
@@ -240,7 +276,7 @@ export default function KnowledgeBasePage() {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white">Base de Conhecimento</h1>
-          <p className="text-zinc-400">Gerencie seus materiais e estruture o acesso.</p>
+          <p className="text-zinc-400">Gerencie os materiais do agente <span className='text-indigo-400 font-mono'>{agentSlug}</span>.</p>
         </div>
         <div className="flex bg-[#18181b] p-1 rounded-lg border border-white/10">
            <button 
@@ -327,7 +363,7 @@ export default function KnowledgeBasePage() {
                   <div className="flex flex-col items-center gap-2">
                     <UploadCloud className="w-8 h-8 text-zinc-500" />
                     <p className="text-zinc-300 font-medium">Clique para enviar arquivo</p>
-                    <p className="text-xs text-zinc-500">Será salvo com as tags e nível selecionados.</p>
+                    <p className="text-xs text-zinc-500">Será salvo na base do agente <strong>{agentSlug}</strong>.</p>
                   </div>
                 )}
              </div>
@@ -337,6 +373,7 @@ export default function KnowledgeBasePage() {
           <div className="space-y-4">
             <h2 className="text-lg font-semibold text-white">Arquivos Enviados</h2>
             <div className="grid gap-3">
+              {documents.length === 0 && <p className="text-zinc-500 text-sm">Nenhum documento encontrado para este agente.</p>}
               {documents.map(doc => (
                 <div key={doc.id} className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 bg-[#18181b] border border-white/5 rounded-xl gap-4">
                    
@@ -402,7 +439,7 @@ export default function KnowledgeBasePage() {
       {/* === ABA: CONFIGURAÇÕES === */}
       {activeTab === 'settings' && (
         <div className="grid md:grid-cols-2 gap-8 animate-in fade-in duration-500">
-          
+          {/* ... MANTIDO IGUAL AO ORIGINAL ... */}
           {/* GERENCIAR TAGS */}
           <div className="bg-[#18181b] p-6 rounded-xl border border-white/5 space-y-6">
              <div className="flex items-center gap-3 pb-4 border-b border-white/5">

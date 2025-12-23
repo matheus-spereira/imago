@@ -26,14 +26,14 @@ export default function LoginPage() {
         redirect: false,
         email,
         password,
-        loginType, // <--- O segredo para o auth.ts saber qual tabela olhar
+        loginType, // O segredo para o auth.ts saber qual tabela olhar
       });
 
       if (res?.ok) {
         // 3. Redirecionamento Inteligente
         if (loginType === 'consultant') {
-           // O Middleware depois pode ajustar isso para /consultant/[slug]/dashboard
-           router.push('/consultant/dashboard'); 
+           // CORREÇÃO: Redireciona para a raiz /consultant (onde está o Dashboard agora)
+           router.push('/consultant'); 
         } else {
            router.push('/hub'); // Área do Aluno
         }
@@ -162,9 +162,8 @@ export default function LoginPage() {
           <div className="mt-8 pt-6 border-t border-white/10 text-center">
             <p className="text-sm text-[var(--text-muted)]">
               Ainda não tem acesso?{' '}
-              {/* O link de cadastro muda dependendo da aba selecionada */}
               <a 
-                href={loginType === 'consultant' ? '/register-consultant' : '/register-student'} // Ajuste conforme suas rotas
+                href={loginType === 'consultant' ? '/register-consultant' : '/register-student'}
                 className="text-[var(--primary-500)] font-medium hover:text-[var(--primary-400)] hover:underline transition-colors"
               >
                 Criar conta de {loginType === 'consultant' ? 'Consultor' : 'Aluno'}
