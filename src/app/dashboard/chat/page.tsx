@@ -23,7 +23,7 @@ type ChatSession = {
 };
 
 type ConsultantInfo = {
-  id?: string;
+  id: string;
   name: string;
   slug?: string;
 };
@@ -36,7 +36,7 @@ export default function InternalChatPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   
   // Dados Dinâmicos
-  const [consultant, setConsultant] = useState<ConsultantInfo>({ name: 'Carregando...' });
+  const [consultant, setConsultant] = useState<ConsultantInfo>({ id: '', name: 'Carregando...' });
   const [currentSessionId, setCurrentSessionId] = useState<string>('new');
   const [messages, setMessages] = useState<Message[]>([]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -133,7 +133,7 @@ export default function InternalChatPage() {
 
   // --- ENVIO DE MENSAGEM ---
   const handleSendManual = async () => {
-    if (!input.trim() || isLoading) return;
+    if (!input.trim() || isLoading || !consultant.id) return;
 
     const userText = input;
     setInput('');
@@ -171,7 +171,7 @@ export default function InternalChatPage() {
         body: JSON.stringify({
           messages: [...messages, tempUserMsg],
           sessionId: currentSessionId,
-          consultantId: consultant.id // <--- AGORA USA O ID REAL!
+          consultantId: consultant.id,
         }),
         signal: abortControllerRef.current.signal
       });

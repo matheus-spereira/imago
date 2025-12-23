@@ -1,34 +1,42 @@
-// prisma/schema.prisma (exemplo)
+// schema.prisma
+
 generator client {
-  provider = "prisma-client-js"
-  previewFeatures = ["postgresqlExtensions"] // Necessário para vetores
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-  extensions = [vector] // Ativa a extensão pgvector para vetores
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
 }
 
-// Eenum para tipos e status
+// --- ENUMS ---
 enum MediaType {
-  TEXT      // PDF, DOCX, TXT
-  AUDIO     // MP3, WAV
-  VIDEO     // MP4, MOV
-  LINK      // Youtube, Blog posts (Futuro)
+  TEXT
+  AUDIO
+  VIDEO
+  LINK
 }
 
 enum ProcessingStatus {
-  PENDING     // Arquivo recebido
-  PROCESSING  // IA está lendo/transcrevendo
-  COMPLETED   // Pronto para o chat
-  FAILED      // Erro no processo
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum AgentModel {
+  GPT_4o_MINI
+  GPT_4o
+  // Futuro: CLAUDE_3_5_SONNET, etc.
 }
 
 // ==========================================
-// 1. Camada B2B (Seus Clientes / Consultores)
+// 1. SISTEMA DE CONSULTORES (B2B - SEUS CLIENTES)
 // ==========================================
 
+// Login do Consultor (Google/NextAuth)
 model User {
   id            String    @id @default(cuid())
   name          String?
@@ -42,32 +50,219 @@ model User {
   accounts      Account[]
   sessions      Session[]
 
-  // Relacionamento 1:1 com o Perfil de Consultor
   consultantProfile ConsultantProfile?
 }
 
 model ConsultantProfile {
-  id              String    @id @default(cuid())
-  userId          String    @unique
-  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id            String   @id @default(cuid())
   
-  slug            String    @unique // ex: imago.ai/chat/pedro-silva
-  name            String    // Nome de exibição da IA
-  systemPrompt    String?   @db.Text
-  welcomeMessage  String?
+  userId        String   @unique 
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   
-  // Configurações de Limite (Plano de Negócios)
-  plan            String    @default("STARTER") // STARTER, PRO, SCALE
-  monthlyUsage    Int       @default(0) // Contador de mensagens no mês
+  name          String?
+  slug          String   @unique
+  phone         String?
   
-  documents       Document[]
-  chatSessions    ChatSession[] // Histórico de todos os clientes dele
+  // CONFIGS DO PLANO DO CONSULTOR
+  plan          String   @default("STARTER") 
   
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  // RELACIONAMENTOS
+  agents        Agent[]         
+  documents     Document[]
+  chatSessions  ChatSession[]   
+  
+  // GESTÃO DE ACESSOS E CONVITES
+  accessGrants  AccessGrant[]   
+  invites       Invite[]
+  
+  // PADRONIZAÇÃO
+  definedTags   ConsultantTag[] 
+  definedLevels ConsultantLevel[] 
 
-  @@index([slug]) // Busca rápida pela URL do consultor
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 }
+
+// ==========================================
+// 2. A ENTIDADE "AGENTE" (O PRODUTO)
+// ==========================================
+
+model Agent {
+  id            String     @id @default(cuid())
+  name          String     // Ex: "Mentor de Vendas"
+  slug          String     // Ex: "vendas-expert" (único por consultor)
+  avatarUrl     String?
+  description   String?    // Descrição curta para o Card na Vitrine
+  
+  // CÉREBRO
+  systemPrompt  String     @db.Text 
+  model         AgentModel @default(GPT_4o_MINI) 
+  
+  // ECONOMIA
+  creditCost    Int        @default(1) 
+  
+  // CONTROLE DE ACESSO
+  accessLevel   Int        @default(0) 
+  requiredTags  String[]   @default([]) 
+
+  // VÍNCULOS
+  consultantId  String
+  consultant    ConsultantProfile @relation(fields: [consultantId], references: [id], onDelete: Cascade)
+  
+  chatSessions  ChatSession[]
+
+  isActive      Boolean    @default(true)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@unique([consultantId, slug]) 
+}
+
+// ==========================================
+// 3. BASE DE CONHECIMENTO (RAG)
+// ==========================================
+
+model Document {
+  id            String    @id @default(cuid())
+  consultantId  String
+  consultant    ConsultantProfile @relation(fields: [consultantId], references: [id], onDelete: Cascade)
+  
+  fileName      String
+  fileKey       String
+  summary       String?           @db.Text 
+  mediaType     MediaType         @default(TEXT)
+  status        ProcessingStatus  @default(PENDING)
+  errorMessage  String?
+  charCount     Int?      
+  isIndexed     Boolean           @default(false)
+
+  // Filtros
+  tags          String[]  @default([]) 
+  accessLevel   Int       @default(0)  
+  
+  chunks        DocumentChunk[]
+  createdAt     DateTime  @default(now())
+
+  @@index([consultantId])
+}
+
+model DocumentChunk {
+  id           String   @id @default(cuid())
+  consultantId String
+  
+  documentId   String
+  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  
+  content      String   @db.Text
+  metadata     Json?    @default("{}")
+  
+  // Necessário: `CREATE EXTENSION vector` no Banco
+  embedding    Unsupported("vector(1536)")?
+  
+  createdAt    DateTime @default(now())
+  
+  @@index([consultantId])
+  @@index([documentId])
+}
+
+// ==========================================
+// 4. HUB DE ALUNOS (SISTEMA GLOBAL - B2C)
+// ==========================================
+
+model StudentAccount {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  passwordHash  String    
+  name          String?
+  
+  // ECONOMIA
+  creditBalance Int       @default(10) 
+
+  // ACESSOS
+  accessGrants  AccessGrant[]
+  
+  // HISTÓRICO
+  transactions  CreditTransaction[]
+  chatSessions  ChatSession[]
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model AccessGrant {
+  id               String   @id @default(cuid())
+  
+  studentAccountId String
+  studentAccount   StudentAccount @relation(fields: [studentAccountId], references: [id], onDelete: Cascade)
+  
+  consultantId     String
+  consultant       ConsultantProfile @relation(fields: [consultantId], references: [id], onDelete: Cascade)
+
+  accessLevel      Int      @default(0) 
+  tags             String[] @default([]) 
+  
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+
+  @@unique([studentAccountId, consultantId]) 
+  @@index([studentAccountId])
+}
+
+model CreditTransaction {
+  id               String   @id @default(cuid())
+  
+  studentAccountId String
+  studentAccount   StudentAccount @relation(fields: [studentAccountId], references: [id], onDelete: Cascade)
+  
+  amount           Int      
+  description      String   
+  metadata         Json?    
+  
+  createdAt        DateTime @default(now())
+  
+  @@index([studentAccountId])
+}
+
+// ==========================================
+// 5. CHAT & SESSÕES
+// ==========================================
+
+model ChatSession {
+  id           String   @id @default(cuid())
+  title        String?
+  
+  agentId      String?
+  agent        Agent?   @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  consultantId String
+  consultant   ConsultantProfile @relation(fields: [consultantId], references: [id], onDelete: Cascade)
+
+  studentId    String?  
+  student      StudentAccount? @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  
+  isDemo       Boolean  @default(false)
+  messages     ChatMessage[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([consultantId])
+  @@index([studentId])
+}
+
+model ChatMessage {
+  id            String      @id @default(cuid())
+  sessionId     String
+  session       ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  
+  role          String      // "user" ou "assistant"
+  content       String      @db.Text
+  rating        Int?
+  createdAt     DateTime    @default(now())
+}
+
+// ==========================================
+// 6. NEXT-AUTH (APENAS PARA CONSULTORES)
+// ==========================================
 
 model Account {
   id                 String  @id @default(cuid())
@@ -99,101 +294,53 @@ model Session {
   updatedAt    DateTime @updatedAt
 }
 
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
 // ==========================================
-// 2. Camada de Conhecimento (RAG)
+// 7. CONVITES & CONFIGS
 // ==========================================
 
-model Document {
+model Invite {
   id            String    @id @default(cuid())
+  email         String
+  token         String    @unique 
+  
   consultantId  String
   consultant    ConsultantProfile @relation(fields: [consultantId], references: [id], onDelete: Cascade)
-  
-  fileName      String
-  fileKey       String
+ 
+  accessLevel   Int       @default(0)
+  tags          String[]  @default([])
+  initialCredits Int      @default(0) 
 
-  summary       String?   @db.Text // Resumo gerado pela IA após processamento  
-  mediaType     MediaType         @default(TEXT)
-  status        ProcessingStatus  @default(PENDING)
-  errorMessage  String?           // Se der erro, explicamos aqui
-  
-  charCount     Int?      // Agora é opcional, pois só sabemos depois de transcrever
-  isIndexed     Boolean   @default(false)
-  
-  chunks        DocumentChunk[]
+  status        String    @default("PENDING") 
+  expiresAt     DateTime
   createdAt     DateTime  @default(now())
 
   @@index([consultantId])
 }
 
-model DocumentChunk {
-  id           String   @id @default(cuid())
-  
-  // Isolamento Rápido
+model ConsultantTag {
+  id           String            @id @default(cuid())
+  name         String
   consultantId String
-  documentId   String
-  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  
-  // Conteúdo Textual
-  content      String   @db.Text
-  
-  // Melhoria 1: Metadados Flexíveis (Página, Capítulo, Autor, Data)
-  // Útil para citações precisas: "Segundo a página 4..."
-  metadata     Json?    @default("{}")
+  consultant   ConsultantProfile @relation(fields: [consultantId], references: [id], onDelete: Cascade)
+  createdAt    DateTime          @default(now())
 
-  // Melhoria 2: Busca Vetorial (Semântica)
-  embedding    Unsupported("vector(1536)")?
-
-  // Melhoria 3: Busca Híbrida (Palavras-chave exatas)
-  // O Prisma não gerencia tsvector nativamente bem, então criamos como Unsupported
-  // ou gerenciamos via SQL bruto no Supabase, mas deixamos o campo aqui se for possível mapear.
-  // Alternativa segura: deixar o Postgres gerar isso automaticamente via trigger.
-  
-  createdAt    DateTime @default(now())
-  
-  // Índices de Alta Performance
-  // @@index([embedding], name: "embedding_index", type: Hnsw) // Comentei para criar via SQL
-  @@index([consultantId])
-  @@index([documentId])
+  @@unique([consultantId, name])
 }
 
-// ==========================================
-// 3. Camada B2C (Os Clientes dos seus Clientes)
-// ==========================================
+model ConsultantLevel {
+  id           String            @id @default(cuid())
+  levelNumber  Int
+  name         String             
+  consultantId String
+  consultant   ConsultantProfile @relation(fields: [consultantId], references: [id], onDelete: Cascade)
 
-model ChatSession {
-  id            String    @id @default(cuid())
-  
-  // Título que aparece na Sidebar (Ex: "Resumo da Aula 03")
-  title         String    @default("Nova Conversa")  // <--- ADICIONAR
-
-  // Para saber se foi você testando ou um cliente real
-  isDemo        Boolean   @default(false)            // <--- ADICIONAR
-  
-  consultantId  String
-  consultant    ConsultantProfile @relation(fields: [consultantId], references: [id], onDelete: Cascade)
-  
-  // Identificação do usuário final 
-  endUserEmail  String?
-  fingerprint   String?   
-  
-  messages      ChatMessage[]
-  
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-
-  @@index([consultantId])
-}
-
-model ChatMessage {
-  id            String      @id @default(cuid())
-  sessionId     String
-  session       ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  
-  role          String      // "user" ou "assistant"
-  content       String      @db.Text
-  
-  // Opcional: Feedback do usuário final (Joinha/Joinha invertido)
-  rating        Int?        
-  
-  createdAt     DateTime    @default(now())
+  @@unique([consultantId, levelNumber])
 }

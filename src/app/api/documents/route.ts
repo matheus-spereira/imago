@@ -33,8 +33,10 @@ export async function GET(req: NextRequest) {
         status: true,
         createdAt: true,
         errorMessage: true,
-        fileKey: true, // <--- NECESSÁRIO PARA ABRIR O ARQUIVO
-        summary: true, // <--- O NOVO RESUMO
+        fileKey: true,
+        summary: true,      // O resumo já estava aqui, OK
+        tags: true,         // <--- ADICIONADO
+        accessLevel: true   // <--- ADICIONADO
       }
     });
 

@@ -6,6 +6,10 @@ import { useRouter } from 'next/navigation';
 
 export default function LoginPage() {
   const router = useRouter();
+  
+  // 1. Novo Estado para controlar o Tipo de Login
+  const [loginType, setLoginType] = useState<'consultant' | 'student'>('consultant');
+  
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -17,16 +21,25 @@ export default function LoginPage() {
     setError('');
 
     try {
+      // 2. Enviamos o 'loginType' junto com as credenciais
       const res = await signIn('credentials', {
         redirect: false,
         email,
         password,
+        loginType, // <--- O segredo para o auth.ts saber qual tabela olhar
       });
 
       if (res?.ok) {
-        router.push('/dashboard');
+        // 3. Redirecionamento Inteligente
+        if (loginType === 'consultant') {
+           // O Middleware depois pode ajustar isso para /consultant/[slug]/dashboard
+           router.push('/consultant/dashboard'); 
+        } else {
+           router.push('/hub'); // Área do Aluno
+        }
+        router.refresh();
       } else {
-        setError('Credenciais inválidas.');
+        setError('Credenciais inválidas. Verifique se escolheu a aba correta.');
       }
     } catch (err) {
       setError('Erro ao conectar.');
@@ -36,17 +49,16 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="min-h-screen w-full flex flex-col items-center justify-center relative overflow-hidden px-4">
+    <main className="min-h-screen w-full flex flex-col items-center justify-center relative overflow-hidden px-4 bg-slate-950">
       {/* Background Shapes */}
       <div className="absolute inset-0 pointer-events-none">
         <div className="absolute top-0 left-1/4 w-[600px] h-[600px] rounded-full bg-[var(--primary-600)]/10 blur-[120px]" />
         <div className="absolute bottom-0 right-1/4 w-[500px] h-[500px] rounded-full bg-[var(--accent-600)]/5 blur-[100px]" />
       </div>
 
-      {/* Título Externo - Aumentado */}
+      {/* Título Externo */}
       <div className="text-center mb-8 z-10">
         <h2 className="text-white text-lg font-semibold tracking-wider flex items-center justify-center gap-2">
-          {/* Ícone opcional, se quiser remover basta apagar o SVG */}
           <svg className="w-6 h-6 text-[var(--primary-500)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
           </svg>
@@ -54,18 +66,46 @@ export default function LoginPage() {
         </h2>
       </div>
 
-      {/* Card - Aumentado para max-w-[450px] */}
+      {/* Card Principal */}
       <div className="w-full max-w-[450px] z-10 relative">
         <div className="backdrop-blur-md bg-slate-900/50 border border-white/10 shadow-2xl rounded-2xl p-8 sm:p-10">
           
-          <header className="text-center mb-8">
+          <header className="text-center mb-6">
             <h1 className="text-3xl font-bold text-white tracking-tight">Bem-vindo</h1>
-            <p className="text-[var(--text-muted)] text-sm mt-2">Insira suas credenciais para continuar</p>
+            <p className="text-[var(--text-muted)] text-sm mt-2">
+              Acesse sua conta para continuar
+            </p>
           </header>
+
+          {/* --- NOVO: Seletor de Tipo de Usuário (Abas) --- */}
+          <div className="grid grid-cols-2 gap-1 bg-white/5 p-1 rounded-xl mb-6">
+            <button
+              type="button"
+              onClick={() => setLoginType('consultant')}
+              className={`py-2.5 text-sm font-medium rounded-lg transition-all duration-200 ${
+                loginType === 'consultant'
+                  ? 'bg-[var(--primary-600)] text-white shadow-md'
+                  : 'text-white/60 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              Sou Consultor
+            </button>
+            <button
+              type="button"
+              onClick={() => setLoginType('student')}
+              className={`py-2.5 text-sm font-medium rounded-lg transition-all duration-200 ${
+                loginType === 'student'
+                  ? 'bg-[var(--primary-600)] text-white shadow-md'
+                  : 'text-white/60 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              Sou Aluno
+            </button>
+          </div>
 
           <form onSubmit={handleSubmit} className="space-y-6">
             {error && (
-              <div className="text-sm text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg p-3 text-center">
+              <div className="text-sm text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg p-3 text-center animate-pulse">
                 {error}
               </div>
             )}
@@ -80,7 +120,7 @@ export default function LoginPage() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3.5 text-base text-white focus:ring-2 focus:ring-[var(--primary-500)] focus:border-transparent transition-all outline-none placeholder:text-white/20"
-                  placeholder="exemplo@email.com"
+                  placeholder={loginType === 'consultant' ? "seu@business.com" : "seu@email.com"}
                 />
               </div>
 
@@ -114,7 +154,7 @@ export default function LoginPage() {
                   Acessando...
                 </span>
               ) : (
-                'Entrar na Plataforma'
+                `Entrar como ${loginType === 'consultant' ? 'Consultor' : 'Aluno'}`
               )}
             </button>
           </form>
@@ -122,8 +162,12 @@ export default function LoginPage() {
           <div className="mt-8 pt-6 border-t border-white/10 text-center">
             <p className="text-sm text-[var(--text-muted)]">
               Ainda não tem acesso?{' '}
-              <a href="/register" className="text-[var(--primary-500)] font-medium hover:text-[var(--primary-400)] hover:underline transition-colors">
-                Criar conta agora
+              {/* O link de cadastro muda dependendo da aba selecionada */}
+              <a 
+                href={loginType === 'consultant' ? '/register-consultant' : '/register-student'} // Ajuste conforme suas rotas
+                className="text-[var(--primary-500)] font-medium hover:text-[var(--primary-400)] hover:underline transition-colors"
+              >
+                Criar conta de {loginType === 'consultant' ? 'Consultor' : 'Aluno'}
               </a>
             </p>
           </div>

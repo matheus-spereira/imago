@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { prisma } from '@/lib/prisma';
-import { authOptions } from '@/lib/auth'; // Verifique se o caminho do authOptions está correto
+import { authOptions } from '@/lib/auth';
 
 export async function POST(req: NextRequest) {
   try {
@@ -13,7 +13,8 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { fileKey, fileName, mediaType } = body;
+    // CORREÇÃO AQUI: Extraindo tags e accessLevel do body
+    const { fileKey, fileName, mediaType, tags, accessLevel } = body;
 
     // 2. Buscar ou CRIAR o Perfil do Consultor (Auto-Onboarding)
     let consultant = await prisma.consultantProfile.findFirst({
@@ -21,14 +22,12 @@ export async function POST(req: NextRequest) {
     });
 
     if (!consultant) {
-      // Se não existir perfil, criamos um agora mesmo usando dados do usuário
       const user = await prisma.user.findUnique({
         where: { email: session.user.email }
       });
 
       if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 });
 
-      // Gera um slug simples baseado no nome ou email
       const baseSlug = (user.name || session.user.email.split('@')[0])
         .toLowerCase()
         .replace(/[^a-z0-9]/g, '-');
@@ -37,7 +36,7 @@ export async function POST(req: NextRequest) {
         data: {
           userId: user.id,
           name: user.name || 'Consultor Imago',
-          slug: `${baseSlug}-${Date.now()}`, // Garante unicidade
+          slug: `${baseSlug}-${Date.now()}`,
           plan: 'STARTER'
         }
       });
@@ -50,12 +49,14 @@ export async function POST(req: NextRequest) {
         fileName,
         fileKey,
         mediaType,
-        status: 'PENDING', // Importante: Começa como PENDING
+        status: 'PENDING',
+        // Agora as variáveis existem no escopo
+        tags: tags || [],          
+        accessLevel: accessLevel || 0 
       }
     });
 
     // 4. Disparar Processamento (Simulação de Worker)
-    // Aqui chamamos o worker sem 'await' para não travar o upload
     const workerUrl = `${process.env.NEXTAUTH_URL || req.nextUrl.origin}/api/ingest/worker`;
     
     fetch(workerUrl, {

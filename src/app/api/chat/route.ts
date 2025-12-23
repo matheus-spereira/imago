@@ -9,31 +9,55 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || 'dummy-key',
 });
 
-export const maxDuration = 30;
+// Palavras irrelevantes para o Mock
+const STOP_WORDS = ['qual', 'quem', 'onde', 'como', 'porque', 'para', 'com', 'que', 'uma', 'tem', 'sobre'];
+
+export const maxDuration = 60; // Aumentei um pouco para dar tempo de gerar título/rephrase
 
 export async function POST(req: NextRequest) {
   try {
-    const { messages, consultantId, sessionId } = await req.json();
+    const { messages, consultantId, sessionId, filterOptions } = await req.json();
 
-    // 1. Validação Básica
+    // Filtros
+    const userLevel = filterOptions?.accessLevel ?? 99; 
+    const requiredTags = filterOptions?.tags ?? []; 
+
+    // Validação
     if (!messages || messages.length === 0) {
       return NextResponse.json({ error: 'Mensagens ausentes' }, { status: 400 });
     }
-
     if (!consultantId) {
        return NextResponse.json({ error: 'Consultant ID é obrigatório.' }, { status: 400 });
     }
 
     const lastMessage = messages[messages.length - 1];
-    const userQuery = lastMessage.content;
+    const rawUserQuery = lastMessage.content;
     let currentSessionId = sessionId;
 
     // ============================================================
-    // PARTE A: GESTÃO DA SESSÃO
+    // 1. GESTÃO DE SESSÃO & TÍTULO INTELIGENTE
     // ============================================================
 
     if (!currentSessionId || currentSessionId === 'new') {
-      const title = userQuery.slice(0, 30) + '...';
+      let title = rawUserQuery.slice(0, 30) + '...';
+
+      // MELHORIA 1: Título Inteligente (apenas no modo Real)
+      if (!IS_MOCK_MODE) {
+        try {
+          const titleCompletion = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [
+              { role: 'system', content: 'Gere um título de 3 a 5 palavras resumindo o tópico desta mensagem. Não use aspas.' },
+              { role: 'user', content: rawUserQuery }
+            ],
+            max_tokens: 15,
+          });
+          title = titleCompletion.choices[0]?.message?.content?.trim() || title;
+        } catch (e) {
+          console.warn("Falha ao gerar título automático, usando padrão.");
+        }
+      }
+
       const newSession = await prisma.chatSession.create({
         data: {
           title: title,
@@ -44,46 +68,60 @@ export async function POST(req: NextRequest) {
       currentSessionId = newSession.id;
     }
 
+    // Salva msg do usuário
     await prisma.chatMessage.create({
-      data: {
-        sessionId: currentSessionId,
-        role: 'user',
-        content: userQuery,
-      }
+      data: { sessionId: currentSessionId, role: 'user', content: rawUserQuery }
     });
 
     // ============================================================
-    // PARTE B: RAG - RECUPERAÇÃO DE CONTEXTO
+    // 2. QUERY REPHRASING (CONTEXTUALIZAÇÃO)
     // ============================================================
     
-    console.log(`[CHAT] Buscando contexto... (Mock: ${IS_MOCK_MODE})`);
+    let searchGenericQuery = rawUserQuery;
+
+    // MELHORIA 2: Se houver histórico, reescreva a pergunta para ter contexto
+    if (!IS_MOCK_MODE && messages.length > 1) {
+      try {
+        console.log("[CHAT] Contextualizando pergunta baseada no histórico...");
+        const rephraseCompletion = await openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: 'Você é um otimizador de busca. Reescreva a última pergunta do usuário para que ela seja independente e completa, incorporando o contexto das mensagens anteriores se necessário. Retorne APENAS a pergunta reescrita.' },
+            ...messages.map((m: any) => ({ role: m.role, content: m.content })) // Envia histórico
+          ]
+        });
+        searchGenericQuery = rephraseCompletion.choices[0]?.message?.content || rawUserQuery;
+        console.log(`[CHAT] Pergunta Original: "${rawUserQuery}" -> Reescrita: "${searchGenericQuery}"`);
+      } catch (e) {
+        console.warn("Falha ao reescrever pergunta, usando original.");
+      }
+    }
+
+    // ============================================================
+    // 3. RAG - RECUPERAÇÃO (USANDO A PERGUNTA OTIMIZADA)
+    // ============================================================
+    
+    console.log(`[CHAT] Buscando contexto para: "${searchGenericQuery}"`);
     
     let contextText = "";
     let foundDocsCount = 0;
 
     if (IS_MOCK_MODE) {
-      // --- MODO MOCK MELHORADO (Busca por Múltiplas Palavras-Chave) ---
+      // LOGICA MOCK: Busca "burra" por palavras-chave
+      const words = searchGenericQuery.toLowerCase().split(/[\s,.?!]+/);
+      const keyword = words.find((w: string) => w.length > 3 && !STOP_WORDS.includes(w)) || words[0];
       
-      // 1. Quebra a frase em palavras e filtra as pequenas (de, da, o, a...)
-      const keywords = userQuery.split(/[\s,.?!]+/).filter((w: string) => w.length > 3);
-      
-      // Se não sobrou nada (ex: "o que é?"), usa a frase inteira
-      const searchTerms = keywords.length > 0 ? keywords : [userQuery];
-
-      console.log("[MOCK SEARCH] Termos buscados:", searchTerms);
-
       const chunks = await prisma.documentChunk.findMany({
         where: {
           consultantId: consultantId,
-          // Busca qualquer chunk que contenha PELO MENOS UMA das palavras
-          OR: searchTerms.map((term) => ({
-            content: {
-              contains: term,
-              mode: 'insensitive'
-            }
-          }))
+          content: { contains: keyword, mode: 'insensitive' },
+          document: {
+            accessLevel: { lte: userLevel },
+            AND: requiredTags.length > 0 ? { tags: { hasSome: requiredTags } } : {}
+          }
         },
-        take: 4, // Pega até 4 trechos
+        take: 3,
+        include: { document: true }
       });
 
       if (chunks.length > 0) {
@@ -92,50 +130,64 @@ export async function POST(req: NextRequest) {
       }
 
     } else {
-      // --- MODO REAL: Busca Vetorial ---
+      // LOGICA REAL: Busca Vetorial Inteligente
       try {
         const embeddingResponse = await openai.embeddings.create({
-          model: 'text-embedding-3-small',
-          input: userQuery,
+           model: 'text-embedding-3-small', 
+           input: searchGenericQuery // <--- Usa a pergunta reescrita/contextualizada!
         });
-        const queryVector = embeddingResponse.data[0].embedding;
-        const vectorString = `[${queryVector.join(',')}]`;
+        const vectorString = `[${embeddingResponse.data[0].embedding.join(',')}]`;
 
-        const chunks: any[] = await prisma.$queryRaw`
-          SELECT content, 
-                 1 - (embedding <=> ${vectorString}::vector) as similarity
-          FROM "DocumentChunk"
-          WHERE "consultantId" = ${consultantId} 
-            AND (1 - (embedding <=> ${vectorString}::vector)) > 0.5 
-          ORDER BY similarity DESC
+        let tagFilterSQL = "";
+        if (requiredTags.length > 0) {
+            const tagsString = requiredTags.map((t: string) => `'${t}'`).join(',');
+            tagFilterSQL = `AND doc.tags && ARRAY[${tagsString}]`;
+        }
+
+        const chunks: any[] = await prisma.$queryRawUnsafe(`
+          SELECT chunk.content
+          FROM "DocumentChunk" chunk
+          JOIN "Document" doc ON chunk."documentId" = doc.id
+          WHERE chunk."consultantId" = '${consultantId}'
+            AND doc."accessLevel" <= ${userLevel}
+            ${tagFilterSQL}
+            AND (1 - (chunk.embedding <=> '${vectorString}'::vector)) > 0.5
+          ORDER BY (chunk.embedding <=> '${vectorString}'::vector) ASC
           LIMIT 5;
-        `;
+        `);
 
         if (chunks.length > 0) {
           contextText = chunks.map(c => c.content).join("\n\n---\n\n");
           foundDocsCount = chunks.length;
         }
-
-      } catch (err) {
-        console.error("[RAG ERROR]", err);
-      }
+      } catch (err) { console.error(err); }
     }
 
-    console.log(`[RAG] Encontrados ${foundDocsCount} trechos.`);
-
     // ============================================================
-    // PARTE C: GERAÇÃO DA RESPOSTA
+    // 4. GERAÇÃO DA RESPOSTA FINAL
     // ============================================================
 
-    const systemPrompt = `Você é um assistente especialista e representa o consultor.
-    
+    // Buscar System Prompt Personalizado do Consultor
+    let customPrompt = "";
+    try {
+      const consultantProfile = await prisma.consultantProfile.findUnique({
+        where: { id: consultantId },
+        select: { systemPrompt: true, name: true }
+      });
+      if (consultantProfile?.systemPrompt) {
+        customPrompt = `PERSONALIDADE / TOM DE VOZ:\n${consultantProfile.systemPrompt}\n\n`;
+      } else {
+        customPrompt = `Você é ${consultantProfile?.name || 'o assistente'}, especialista no assunto.\n`;
+      }
+    } catch (e) {}
+
+    const systemPrompt = `${customPrompt}
     INSTRUÇÕES:
-    1. Responda usando APENAS o contexto abaixo.
-    2. Se não encontrar a resposta, diga que não consta na base de conhecimento.
-
-    CONTEXTO:
-    ${contextText || "Nenhum documento relevante encontrado."}
-    `;
+    1. Responda à pergunta do usuário usando o contexto abaixo.
+    2. Se a resposta não estiver no contexto, diga que não consta na base de conhecimento.
+    
+    CONTEXTO RECUPERADO:
+    ${contextText || "Nenhum documento relevante encontrado."}`;
     
     let stream: ReadableStream;
 
@@ -166,20 +218,18 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// ... (Mantenha as funções auxiliares createMockStream, createOpenAIStream e saveBotMessageToDb iguais)
-// Se precisar que eu reenvie as funções auxiliares, me avise. Elas não mudaram.
+// --- FUNÇÕES AUXILIARES ---
+
 function createMockStream(sessionId: string, docsCount: number, context: string) {
   const hasContext = docsCount > 0;
-  
   const mockText = hasContext
     ? `[RAG SIMULADO] Encontrei ${docsCount} trechos!\n\nBaseado neles:\n"${context.slice(0, 150)}..."\n\n(No modo real, a IA usaria isso para responder).`
-    : `[RAG SIMULADO] Não encontrei nada relevante para as palavras-chave usadas. Tente usar uma palavra que exista no texto.`;
+    : `[RAG SIMULADO] Não encontrei nada relevante (respeitando filtros).`;
 
   return new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder();
       const chunks = mockText.split(/(?=[ ,.\n])/);
-
       let fullText = '';
       for (const chunk of chunks) {
         await new Promise(r => setTimeout(r, 20)); 

@@ -1,113 +1,228 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import Button from '@/components/ui/Button';
-import Input from '@/components/ui/Input';
+import { useState, useEffect, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Loader2, ArrowRight, CheckCircle2, AlertTriangle, ShieldCheck } from 'lucide-react';
 
-export default function RegisterPage() {
+// Componente interno para ler params (Next.js 13+ exige Suspense para useSearchParams)
+function RegisterForm() {
   const router = useRouter();
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const searchParams = useSearchParams();
+  const token = searchParams.get('token');
 
+  // Estados de Dados
+  const [inviteData, setInviteData] = useState<{ email: string; consultantName: string } | null>(null);
+  
+  // Estados de UI
+  const [isValidating, setIsValidating] = useState(true);
+  const [validationError, setValidationError] = useState('');
+  
+  // Estados do Formulário
+  const [name, setName] = useState('');
+  const [password, setPassword] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
+
+  // 1. Ao carregar, valida o token e busca o nome do consultor
+  useEffect(() => {
+    if (!token) {
+      setValidationError('Convite necessário. Peça o link ao seu consultor.');
+      setIsValidating(false);
+      return;
+    }
+
+    async function validateInvite() {
+      try {
+        const res = await fetch(`/api/auth/invite/validate?token=${token}`);
+        const data = await res.json();
+
+        if (res.ok) {
+          setInviteData(data);
+        } else {
+          setValidationError(data.error || 'Convite inválido');
+        }
+      } catch (err) {
+        setValidationError('Erro de conexão. Tente novamente.');
+      } finally {
+        setIsValidating(false);
+      }
+    }
+
+    validateInvite();
+  }, [token]);
+
+  // 2. Registro do Aluno
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setLoading(true);
-    setError('');
-    const res = await fetch('/api/auth/register', {  // Ajustei para /api/auth/register se for o path correto
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, email, password }),
-    });
-    setLoading(false);
-    if (res.ok) router.push('/login');
-    else setError('Erro ao registrar');
+    if (!token || !inviteData) return;
+    
+    setIsSubmitting(true);
+    setSubmitError('');
+
+    try {
+      const res = await fetch('/api/auth/register-student', { // Nova rota específica para alunos
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          token, 
+          name, 
+          password,
+          email: inviteData.email // Garante que usa o email do convite
+        }),
+      });
+
+      if (res.ok) {
+        // Sucesso! Redirecionar para login ou dashboard
+        router.push('/login?registered=true');
+      } else {
+        const err = await res.json();
+        setSubmitError(err.error || 'Erro ao criar conta');
+      }
+    } catch (err) {
+      setSubmitError('Erro inesperado. Tente novamente.');
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 relative overflow-hidden">
-      {/* Formas abstratas para profundidade */}
-      <div className="absolute top-10 left-10 w-32 h-32 bg-purple-500/10 rounded-full blur-xl"></div>
-      <div className="absolute bottom-10 right-10 w-40 h-40 bg-blue-500/10 rounded-full blur-xl"></div>
-      <div className="absolute top-1/2 left-1/4 w-24 h-24 bg-pink-500/10 rounded-full blur-xl"></div>
+  // --- RENDERIZAÇÃO DE ESTADOS ---
 
-      <div className="bg-white/10 backdrop-blur-md p-8 rounded-3xl shadow-2xl max-w-sm w-full mx-4 border border-white/20">
-        <div className="text-center mb-8">
-          <h1 className="text-2xl font-bold text-white mb-2">Criar Conta</h1>
-        </div>
+  // Estado 1: Validando Token (Loading Elegante)
+  if (isValidating) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#09090b] text-white">
+        <Loader2 className="w-8 h-8 animate-spin text-indigo-500 mb-4" />
+        <p className="text-zinc-500 text-sm animate-pulse">Verificando convite...</p>
+      </div>
+    );
+  }
 
-        <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="relative">
-            <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-              <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-              </svg>
-            </div>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Nome completo"
-              required
-              className="w-full pl-12 pr-4 py-4 bg-white/20 border border-white/30 rounded-full text-white placeholder-gray-300 focus:outline-none focus:ring-2 focus:ring-white/50 focus:border-white/50 transition-all duration-200"
-            />
+  // Estado 2: Erro (Sem token ou inválido)
+  if (validationError) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-[#09090b] p-4">
+        <div className="max-w-md w-full bg-[#18181b] border border-red-900/50 rounded-2xl p-8 text-center shadow-2xl">
+          <div className="w-12 h-12 bg-red-900/20 rounded-full flex items-center justify-center mx-auto mb-4">
+            <AlertTriangle className="w-6 h-6 text-red-500" />
           </div>
-
-          <div className="relative">
-            <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-              <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 12a4 4 0 10-8 0 4 4 0 008 0zm0 0v1.5a2.5 2.5 0 005 0V12a9 9 0 10-9 9m4.5-1.206a8.959 8.959 0 01-4.5 1.207" />
-              </svg>
-            </div>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="Email"
-              required
-              className="w-full pl-12 pr-4 py-4 bg-white/20 border border-white/30 rounded-full text-white placeholder-gray-300 focus:outline-none focus:ring-2 focus:ring-white/50 focus:border-white/50 transition-all duration-200"
-            />
-          </div>
-
-          <div className="relative">
-            <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-              <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-              </svg>
-            </div>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Senha (mín. 8 caracteres)"
-              required
-              className="w-full pl-12 pr-4 py-4 bg-white/20 border border-white/30 rounded-full text-white placeholder-gray-300 focus:outline-none focus:ring-2 focus:ring-white/50 focus:border-white/50 transition-all duration-200"
-            />
-          </div>
-
-          {error && <p className="text-red-400 text-sm text-center">{error}</p>}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-4 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-semibold rounded-full transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-transparent disabled:opacity-50 disabled:cursor-not-allowed"
+          <h1 className="text-xl font-bold text-white mb-2">Acesso Restrito</h1>
+          <p className="text-zinc-400 mb-6">{validationError}</p>
+          <button 
+            onClick={() => router.push('/login')}
+            className="text-sm text-zinc-500 hover:text-white transition-colors underline"
           >
-            {loading ? 'Criando conta...' : 'Criar Conta'}
+            Voltar para Login
           </button>
-        </form>
+        </div>
+      </div>
+    );
+  }
 
-        <div className="mt-8 text-center">
-          <p className="text-gray-400">
-            Já tem conta?{' '}
-            <a href="/login" className="text-purple-400 hover:text-purple-300 font-semibold transition-colors">
-              Entrar
-            </a>
-          </p>
+  // Estado 3: Sucesso (Formulário Personalizado)
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-[#09090b] relative overflow-hidden">
+      {/* Background Sutil e Premium */}
+      <div className="absolute inset-0 bg-[url('/grid.svg')] bg-center [mask-image:linear-gradient(180deg,white,rgba(255,255,255,0))] opacity-20"></div>
+      <div className="absolute top-0 w-full h-px bg-gradient-to-r from-transparent via-indigo-500/50 to-transparent"></div>
+
+      <div className="relative w-full max-w-md p-4 animate-in fade-in slide-in-from-bottom-4 duration-700">
+        
+        {/* Card Principal */}
+        <div className="bg-[#18181b]/80 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+          
+          {/* Header Personalizado */}
+          <div className="p-8 pb-6 border-b border-white/5 bg-white/[0.02]">
+            <div className="flex items-center gap-2 mb-6">
+               <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
+               <span className="text-xs font-medium text-emerald-500 uppercase tracking-widest">Convite Oficial</span>
+            </div>
+            
+            <h1 className="text-2xl font-bold text-white mb-2">
+              Bem-vindo ao Imago
+            </h1>
+            <p className="text-zinc-400 leading-relaxed">
+              Você foi convidado por <strong className="text-white font-medium">{inviteData?.consultantName}</strong> para acessar esta base de conhecimento exclusiva.
+            </p>
+          </div>
+
+          {/* Formulário */}
+          <div className="p-8 pt-6">
+            <form onSubmit={handleSubmit} className="space-y-5">
+              
+              {/* Email (Read-only para segurança) */}
+              <div className="space-y-1.5">
+                <label className="text-xs text-zinc-500 font-medium ml-1">Email Cadastrado</label>
+                <div className="flex items-center px-4 py-3 bg-zinc-900/50 border border-white/5 rounded-xl text-zinc-400 cursor-not-allowed">
+                  <ShieldCheck className="w-4 h-4 mr-3 text-zinc-600" />
+                  {inviteData?.email}
+                </div>
+              </div>
+
+              {/* Nome */}
+              <div className="space-y-1.5">
+                <label className="text-xs text-zinc-400 font-medium ml-1">Seu Nome Completo</label>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  required
+                  placeholder="Ex: João Silva"
+                  className="w-full px-4 py-3 bg-zinc-900 border border-white/10 rounded-xl text-white placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/50 transition-all"
+                />
+              </div>
+
+              {/* Senha */}
+              <div className="space-y-1.5">
+                <label className="text-xs text-zinc-400 font-medium ml-1">Defina sua Senha</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  placeholder="Mínimo 8 caracteres"
+                  className="w-full px-4 py-3 bg-zinc-900 border border-white/10 rounded-xl text-white placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/50 transition-all"
+                />
+              </div>
+
+              {submitError && (
+                <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-xs text-center">
+                  {submitError}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-xl transition-all shadow-[0_0_20px_-5px_rgba(79,70,229,0.3)] hover:shadow-[0_0_25px_-5px_rgba(79,70,229,0.5)] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 group"
+              >
+                {isSubmitting ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <>
+                    Criar meu Acesso <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                  </>
+                )}
+              </button>
+            </form>
+          </div>
+          
+          {/* Footer */}
+          <div className="px-8 py-4 bg-zinc-900/30 border-t border-white/5 text-center">
+            <p className="text-xs text-zinc-600">
+              Imago AI • Tecnologia de Inteligência para Consultores
+            </p>
+          </div>
         </div>
       </div>
     </div>
+  );
+}
+
+// Wrapper Principal (Obrigatório no Next 13+)
+export default function RegisterPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-[#09090b]"></div>}>
+      <RegisterForm />
+    </Suspense>
   );
 }
